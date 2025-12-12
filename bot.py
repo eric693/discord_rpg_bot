@@ -31,6 +31,57 @@ CHECKIN_FILE = f"{DATA_DIR}/checkins.json"
 # 確保數據目錄存在
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ==================== 管理員檢查函數 ====================
+
+def is_bot_admin(guild_id: str, user_id: str) -> bool:
+    """檢查用戶是否為機器人管理員"""
+    guilds = load_json(GUILDS_FILE, {})
+    if guild_id not in guilds:
+        return False
+    bot_admins = guilds[guild_id].get('bot_admins', [])
+    return str(user_id) in bot_admins
+
+def add_bot_admin(guild_id: str, user_id: str):
+    """添加機器人管理員"""
+    guilds = load_json(GUILDS_FILE, {})
+    if guild_id not in guilds:
+        guilds[guild_id] = {'currencies': {}, 'income_roles': {}, 'bot_admins': []}
+    if 'bot_admins' not in guilds[guild_id]:
+        guilds[guild_id]['bot_admins'] = []
+    if str(user_id) not in guilds[guild_id]['bot_admins']:
+        guilds[guild_id]['bot_admins'].append(str(user_id))
+    save_json(GUILDS_FILE, guilds)
+
+def remove_bot_admin(guild_id: str, user_id: str):
+    """移除機器人管理員"""
+    guilds = load_json(GUILDS_FILE, {})
+    if guild_id in guilds and 'bot_admins' in guilds[guild_id]:
+        if str(user_id) in guilds[guild_id]['bot_admins']:
+            guilds[guild_id]['bot_admins'].remove(str(user_id))
+            save_json(GUILDS_FILE, guilds)
+
+async def check_admin_permission(interaction: discord.Interaction) -> bool:
+    """檢查用戶是否有管理員權限（Discord管理員或機器人管理員）"""
+    # 檢查Discord管理員權限
+    if interaction.user.guild_permissions.administrator:
+        return True
+    # 檢查機器人自定義管理員
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    return is_bot_admin(guild_id, user_id)
+
+def admin_only():
+    """裝飾器：只允許管理員使用"""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if await check_admin_permission(interaction):
+            return True
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
+            ephemeral=True
+        )
+        return False
+    return app_commands.check(predicate)
+
 # ==================== 數據管理函數 ====================
 
 def load_json(filepath, default=None):
@@ -879,8 +930,15 @@ class CreateCharacterModal(discord.ui.Modal, title='創建角色'):
 # ========== 貨幣管理指令 ==========
 
 @bot.tree.command(name="創建貨幣", description="創建一種新的貨幣（管理員）")
-@app_commands.checks.has_permissions(administrator=True)
 async def create_currency(interaction: discord.Interaction):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     await interaction.response.send_modal(CreateCurrencyModal())
 
 @bot.tree.command(name="貨幣列表", description="查看伺服器的所有貨幣")
@@ -913,8 +971,15 @@ async def list_currencies(interaction: discord.Interaction):
 
 @bot.tree.command(name="刪除貨幣", description="刪除一種貨幣（管理員，謹慎使用！）")
 @app_commands.describe(貨幣id="要刪除的貨幣ID")
-@app_commands.checks.has_permissions(administrator=True)
 async def delete_currency(interaction: discord.Interaction, 貨幣id: str):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     guild_id = str(interaction.guild.id)
     guilds = get_guilds()
     init_guild(guild_id)
@@ -1315,8 +1380,15 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     貨幣id="貨幣類型",
     每日收入="每日簽到時獲得的額外收入"
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def set_income_role(interaction: discord.Interaction, 身份組: discord.Role, 貨幣id: str, 每日收入: int):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     guild_id = str(interaction.guild.id)
     guilds = get_guilds()
     init_guild(guild_id)
@@ -1393,8 +1465,15 @@ async def list_income_roles(interaction: discord.Interaction):
     貨幣id="貨幣類型",
     金額="要添加的金額"
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def add_money(interaction: discord.Interaction, 用戶: discord.User, 貨幣id: str, 金額: int):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     guild_id = str(interaction.guild.id)
     guilds = get_guilds()
     init_guild(guild_id)
@@ -1439,8 +1518,15 @@ async def add_money(interaction: discord.Interaction, 用戶: discord.User, 貨�
     貨幣id="貨幣類型",
     金額="要移除的金額"
 )
-@app_commands.checks.has_permissions(administrator=True)
 async def remove_money(interaction: discord.Interaction, 用戶: discord.User, 貨幣id: str, 金額: int):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     guild_id = str(interaction.guild.id)
     guilds = get_guilds()
     init_guild(guild_id)
@@ -1493,8 +1579,15 @@ async def remove_money(interaction: discord.Interaction, 用戶: discord.User, �
 
 @bot.tree.command(name="查看餘額", description="查看玩家的餘額（管理員）")
 @app_commands.describe(用戶="要查看的玩家")
-@app_commands.checks.has_permissions(administrator=True)
 async def check_balance(interaction: discord.Interaction, 用戶: discord.User):
+    # 檢查管理員權限
+    if not await check_admin_permission(interaction):
+        await interaction.response.send_message(
+            "❌ 此指令僅限管理員使用！",
+            ephemeral=True
+        )
+        return
+    
     guild_id = str(interaction.guild.id)
     user_id = str(用戶.id)
     user_key = get_user_key(guild_id, user_id)
@@ -1655,6 +1748,83 @@ async def set_use_description(interaction: discord.Interaction, 商店id: str, �
         ephemeral=True
     )
 
+# ========== 機器人管理員管理指令 ==========
+
+@bot.tree.command(name="添加管理員", description="添加機器人管理員（需要Discord管理員權限）")
+@app_commands.describe(用戶="要設為管理員的用戶")
+@app_commands.checks.has_permissions(administrator=True)
+async def add_admin(interaction: discord.Interaction, 用戶: discord.User):
+    guild_id = str(interaction.guild.id)
+    user_id = str(用戶.id)
+    
+    add_bot_admin(guild_id, user_id)
+    
+    embed = discord.Embed(
+        title="✅ 管理員添加成功",
+        description=f"{用戶.mention} 現在是機器人管理員",
+        color=discord.Color.green()
+    )
+    embed.add_field(
+        name="權限",
+        value="可以使用所有管理員指令（創建貨幣、添加金錢等）",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="移除管理員", description="移除機器人管理員（需要Discord管理員權限）")
+@app_commands.describe(用戶="要移除管理員權限的用戶")
+@app_commands.checks.has_permissions(administrator=True)
+async def remove_admin(interaction: discord.Interaction, 用戶: discord.User):
+    guild_id = str(interaction.guild.id)
+    user_id = str(用戶.id)
+    
+    remove_bot_admin(guild_id, user_id)
+    
+    embed = discord.Embed(
+        title="✅ 管理員移除成功",
+        description=f"{用戶.mention} 的管理員權限已被移除",
+        color=discord.Color.orange()
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="管理員列表", description="查看所有機器人管理員")
+async def list_admins(interaction: discord.Interaction):
+    guild_id = str(interaction.guild.id)
+    guilds = load_json(GUILDS_FILE, {})
+    
+    if guild_id not in guilds or 'bot_admins' not in guilds[guild_id] or not guilds[guild_id]['bot_admins']:
+        await interaction.response.send_message(
+            "❌ 目前沒有設置任何機器人管理員。\n💡 Discord管理員可以使用 `/添加管理員` 來設置。",
+            ephemeral=True
+        )
+        return
+    
+    embed = discord.Embed(
+        title="👑 機器人管理員列表",
+        description="這些用戶可以使用管理員指令",
+        color=discord.Color.gold()
+    )
+    
+    admin_mentions = []
+    for admin_id in guilds[guild_id]['bot_admins']:
+        user = interaction.guild.get_member(int(admin_id))
+        if user:
+            admin_mentions.append(f"• {user.mention} ({user.name})")
+        else:
+            admin_mentions.append(f"• <@{admin_id}> (已離開伺服器)")
+    
+    embed.add_field(
+        name="管理員",
+        value="\n".join(admin_mentions) if admin_mentions else "無",
+        inline=False
+    )
+    
+    embed.set_footer(text="💡 Discord管理員始終擁有所有權限")
+    
+    await interaction.response.send_message(embed=embed)
+
 @bot.tree.command(name="幫助", description="顯示所有可用指令")
 async def help_command(interaction: discord.Interaction):
     embed = discord.Embed(
@@ -1718,6 +1888,18 @@ async def help_command(interaction: discord.Interaction):
         """,
         inline=False
     )
+    
+    embed.add_field(
+        name="👑 管理員管理",
+        value="""
+        `/添加管理員` - 設置機器人管理員（需Discord管理員）
+        `/移除管理員` - 移除機器人管理員（需Discord管理員）
+        `/管理員列表` - 查看所有機器人管理員
+        """,
+        inline=False
+    )
+    
+    embed.set_footer(text="💡 Discord管理員始終擁有所有管理權限")
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
