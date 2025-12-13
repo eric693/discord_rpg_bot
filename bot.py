@@ -343,6 +343,15 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         max_length=10
     )
     
+    # ✅ 新增：庫存數量輸入
+    stock = discord.ui.TextInput(
+        label='庫存數量',
+        placeholder='輸入庫存數量（-1表示無限庫存）',
+        required=True,
+        max_length=10,
+        default="-1"
+    )
+    
     category = discord.ui.TextInput(
         label='類別',
         placeholder='例如: 武器、防具、消耗品...',
@@ -358,19 +367,13 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         max_length=500
     )
     
-    image_url = discord.ui.TextInput(
-        label='商品圖片URL',
-        placeholder='輸入圖片連結（可選）',
-        required=False,
-        style=discord.TextStyle.long
-    )
-    
     def __init__(self, shop_key: str, shop_id: str, currency_id: str, currency_data: dict):
         super().__init__()
         self.shop_key = shop_key
         self.shop_id = shop_id
         self.currency_id = currency_id
         self.currency_data = currency_data
+        # 移除 image_url 從 Modal，改為之後詢問
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -379,6 +382,15 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
                 raise ValueError
         except ValueError:
             await interaction.response.send_message("❌ 價格必須是非負整數！", ephemeral=True)
+            return
+        
+        # ✅ 新增：驗證庫存數量
+        try:
+            stock = int(self.stock.value)
+            if stock < -1:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ 庫存數量必須是大於等於-1的整數！（-1表示無限庫存）", ephemeral=True)
             return
         
         shops = get_shops()
@@ -394,7 +406,8 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
             "currency_id": self.currency_id,
             "category": self.category.value,
             "description": self.description.value,
-            "image_url": self.image_url.value or None,
+            "image_url": None,  # 稍後可以單獨設置
+            "stock": stock,  # ✅ 新增：庫存數量
             "usable": True,
             "resellable": True,
             "consumable": True,
@@ -411,7 +424,10 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         )
         
         price_display = "非賣品" if price == 0 else f"{price} {self.currency_data['emoji']} {self.currency_data['name']}"
+        stock_display = "無限" if stock == -1 else f"{stock} 個"
+        
         embed.add_field(name="價格", value=price_display, inline=True)
+        embed.add_field(name="庫存", value=stock_display, inline=True)  # ✅ 新增：顯示庫存
         embed.add_field(name="類別", value=self.category.value, inline=True)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -463,6 +479,112 @@ class CurrencySelectView(discord.ui.View):
             shop_key = f"{self.guild_id}_{self.user_id}"
             modal = AddItemModal(shop_key, self.shop_id, currency_id, currency_data)
             await interaction.response.send_modal(modal)
+
+# ==================== 購買數量選擇Modal ==================== 
+# ✅ 新增：購買數量輸入Modal
+class PurchaseQuantityModal(discord.ui.Modal, title='選擇購買數量'):
+    quantity = discord.ui.TextInput(
+        label='購買數量',
+        placeholder='輸入要購買的數量',
+        required=True,
+        max_length=10,
+        default="1"
+    )
+    
+    def __init__(self, shop_key: str, shop_id: str, item_id: str, guild_id: str):
+        super().__init__()
+        self.shop_key = shop_key
+        self.shop_id = shop_id
+        self.item_id = item_id
+        self.guild_id = guild_id
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            quantity = int(self.quantity.value)
+            if quantity <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ 數量必須是正整數！", ephemeral=True)
+            return
+        
+        shops = get_shops()
+        shop = shops[self.shop_key][self.shop_id]
+        item = shop['items'][self.item_id]
+        guilds = get_guilds()
+        currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
+        
+        # ✅ 檢查庫存
+        if item['stock'] != -1:  # 不是無限庫存
+            if item['stock'] < quantity:
+                await interaction.response.send_message(
+                    f"❌ 庫存不足！目前只剩 {item['stock']} 個",
+                    ephemeral=True
+                )
+                return
+        
+        # 計算總價
+        total_price = item['price'] * quantity
+        
+        # 檢查用戶餘額
+        user_id = str(interaction.user.id)
+        user_key = get_user_key(self.guild_id, user_id)
+        init_user(user_id, self.guild_id)
+        users = get_users()
+        
+        user_balance = users[user_key]['balances'].get(item['currency_id'], 0)
+        
+        if user_balance < total_price:
+            await interaction.response.send_message(
+                f"❌ {currency_data['name']}不足！需要 {total_price} {currency_data['emoji']}，你只有 {user_balance} {currency_data['emoji']}",
+                ephemeral=True
+            )
+            return
+        
+        # ✅ 扣除庫存
+        if item['stock'] != -1:
+            item['stock'] -= quantity
+        
+        # 扣款並添加物品
+        users[user_key]['balances'][item['currency_id']] = user_balance - total_price
+        
+        if self.item_id not in users[user_key]['inventory']:
+            users[user_key]['inventory'][self.item_id] = {
+                "name": item['name'],
+                "quantity": 0,
+                "shop_id": self.shop_id,
+                "shop_key": self.shop_key,
+                "item_data": item.copy()
+            }
+        users[user_key]['inventory'][self.item_id]['quantity'] += quantity
+        
+        save_shops(shops)
+        save_users(users)
+        
+        embed = discord.Embed(
+            title="✅ 購買成功！",
+            description=f"你購買了 **{item['name']} x{quantity}**",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="花費",
+            value=f"{total_price} {currency_data['emoji']} {currency_data['name']}",
+            inline=True
+        )
+        embed.add_field(
+            name="剩餘餘額",
+            value=f"{users[user_key]['balances'][item['currency_id']]} {currency_data['emoji']}",
+            inline=True
+        )
+        
+        # ✅ 顯示剩餘庫存
+        if item['stock'] != -1:
+            embed.add_field(
+                name="商品剩餘庫存",
+                value=f"{item['stock']} 個",
+                inline=True
+            )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==================== 商店和背包View ====================
 
@@ -538,74 +660,37 @@ class ShopView(discord.ui.View):
         guilds = get_guilds()
         options = []
         for item_id, item in items:
+            # ✅ 修改：檢查庫存和價格
             if item['price'] > 0:  # 只顯示非賣品以外的商品
+                # ✅ 檢查是否有庫存
+                if item.get('stock', -1) == 0:
+                    continue  # 跳過無庫存商品
+                
                 currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
                 price_display = f"{item['price']} {currency_data['emoji']}"
+                
+                # ✅ 顯示庫存信息
+                stock_display = "無限" if item.get('stock', -1) == -1 else f"剩{item['stock']}"
+                
                 options.append(
                     discord.SelectOption(
                         label=item['name'],
-                        description=f"價格: {price_display} | {item['category']}",
+                        description=f"價格: {price_display} | {item['category']} | 庫存: {stock_display}",
                         value=item_id
                     )
                 )
         
         if not options:
-            await interaction.response.send_message("❌ 沒有可購買的商品！", ephemeral=True)
+            await interaction.response.send_message("❌ 沒有可購買的商品或所有商品都已售罄！", ephemeral=True)
             return
         
-        select = discord.ui.Select(placeholder="選擇要購買的商品...", options=options)
+        select = discord.ui.Select(placeholder="選擇要購買的商品...", options=options[:25])  # Discord限制25個選項
         
         async def select_callback(select_interaction: discord.Interaction):
             item_id = select.values[0]
-            item = shop['items'][item_id]
-            currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
-            
-            # 檢查用戶餘額
-            user_id = str(select_interaction.user.id)
-            user_key = get_user_key(self.guild_id, user_id)
-            init_user(user_id, self.guild_id)
-            users = get_users()
-            
-            user_balance = users[user_key]['balances'].get(item['currency_id'], 0)
-            
-            if user_balance < item['price']:
-                await select_interaction.response.send_message(
-                    f"❌ {currency_data['name']}不足！需要 {item['price']} {currency_data['emoji']}，你只有 {user_balance} {currency_data['emoji']}",
-                    ephemeral=True
-                )
-                return
-            
-            # 扣款並添加物品
-            users[user_key]['balances'][item['currency_id']] = user_balance - item['price']
-            
-            if item_id not in users[user_key]['inventory']:
-                users[user_key]['inventory'][item_id] = {
-                    "name": item['name'],
-                    "quantity": 0,
-                    "shop_id": self.shop_id,
-                    "shop_key": self.shop_key,
-                    "item_data": item.copy()
-                }
-            users[user_key]['inventory'][item_id]['quantity'] += 1
-            save_users(users)
-            
-            embed = discord.Embed(
-                title="✅ 購買成功！",
-                description=f"你購買了 **{item['name']}**",
-                color=discord.Color.green()
-            )
-            embed.add_field(
-                name="花費",
-                value=f"{item['price']} {currency_data['emoji']} {currency_data['name']}",
-                inline=True
-            )
-            embed.add_field(
-                name="剩餘餘額",
-                value=f"{users[user_key]['balances'][item['currency_id']]} {currency_data['emoji']}",
-                inline=True
-            )
-            
-            await select_interaction.response.send_message(embed=embed, ephemeral=True)
+            # ✅ 修改：打開購買數量Modal
+            modal = PurchaseQuantityModal(self.shop_key, self.shop_id, item_id, self.guild_id)
+            await select_interaction.response.send_modal(modal)
         
         select.callback = select_callback
         view = discord.ui.View()
@@ -656,9 +741,19 @@ class ShopView(discord.ui.View):
             for item_id, item in page_items:
                 currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
                 price_str = "非賣品" if item['price'] == 0 else f"{item['price']} {currency_data['emoji']} {currency_data['name']}"
+                
+                # ✅ 新增：顯示庫存信息
+                stock = item.get('stock', -1)
+                if stock == -1:
+                    stock_str = "📦 庫存: 無限"
+                elif stock == 0:
+                    stock_str = "❌ 已售罄"
+                else:
+                    stock_str = f"📦 庫存: {stock}"
+                
                 embed.add_field(
                     name=f"{item['name']} ({item['category']})",
-                    value=f"{item['description']}\n價格: {price_str}",
+                    value=f"{item['description']}\n💰 價格: {price_str}\n{stock_str}",
                     inline=False
                 )
         else:
@@ -1105,9 +1200,19 @@ async def view_shop(interaction: discord.Interaction, 用戶: discord.User, 商�
         for item_id, item in list(shop['items'].items())[:5]:  # 只顯示前5個
             currency_data = guilds[guild_id]['currencies'][item['currency_id']]
             price_str = "非賣品" if item['price'] == 0 else f"{item['price']} {currency_data['emoji']} {currency_data['name']}"
+            
+            # ✅ 新增：顯示庫存
+            stock = item.get('stock', -1)
+            if stock == -1:
+                stock_str = "📦 無限庫存"
+            elif stock == 0:
+                stock_str = "❌ 已售罄"
+            else:
+                stock_str = f"📦 剩餘: {stock}"
+            
             embed.add_field(
                 name=f"{item['name']} ({item['category']})",
-                value=f"{item['description']}\n價格: {price_str}",
+                value=f"{item['description']}\n💰 {price_str}\n{stock_str}",
                 inline=False
             )
     
@@ -1140,6 +1245,54 @@ async def delete_shop(interaction: discord.Interaction, 商店id: str):
         f"✅ 已刪除商店 **{shop_name}** (`{shop_id}`)",
         ephemeral=True
     )
+
+# ✅ 新增：補貨指令
+@bot.tree.command(name="補貨", description="為商品補充庫存")
+@app_commands.describe(
+    商店id="商店的ID",
+    商品編號="商品ID（例如: item_1）",
+    數量="補充的數量"
+)
+async def restock(interaction: discord.Interaction, 商店id: str, 商品編號: str, 數量: int):
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    shop_key = f"{guild_id}_{user_id}"
+    shops = get_shops()
+    
+    shop_id = 商店id.lower().strip()
+    
+    if shop_key not in shops or shop_id not in shops[shop_key]:
+        await interaction.response.send_message("❌ 找不到該商店！", ephemeral=True)
+        return
+    
+    if 商品編號 not in shops[shop_key][shop_id]['items']:
+        await interaction.response.send_message("❌ 找不到該商品！", ephemeral=True)
+        return
+    
+    if 數量 <= 0:
+        await interaction.response.send_message("❌ 數量必須大於0！", ephemeral=True)
+        return
+    
+    item = shops[shop_key][shop_id]['items'][商品編號]
+    
+    if item.get('stock', -1) == -1:
+        await interaction.response.send_message("❌ 此商品為無限庫存，無需補貨！", ephemeral=True)
+        return
+    
+    old_stock = item['stock']
+    item['stock'] += 數量
+    save_shops(shops)
+    
+    embed = discord.Embed(
+        title="✅ 補貨成功",
+        description=f"**{item['name']}** 已補充庫存",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="補貨前", value=f"{old_stock} 個", inline=True)
+    embed.add_field(name="補貨後", value=f"{item['stock']} 個", inline=True)
+    embed.add_field(name="補充數量", value=f"+{數量}", inline=True)
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ========== 背包和角色指令 ==========
 
@@ -1715,6 +1868,11 @@ async def item_settings(interaction: discord.Interaction, 商店id: str, 商品�
     embed.add_field(name="可轉售", value="✅" if item.get('resellable', True) else "❌", inline=True)
     embed.add_field(name="消耗型", value="✅" if item.get('consumable', True) else "❌", inline=True)
     
+    # ✅ 新增：顯示庫存信息
+    stock = item.get('stock', -1)
+    stock_display = "無限" if stock == -1 else f"{stock} 個"
+    embed.add_field(name="📦 庫存", value=stock_display, inline=True)
+    
     view = ItemSettingsView(shop_key, shop_id, 商品編號, user_id)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -1848,9 +2006,10 @@ async def help_command(interaction: discord.Interaction):
         value="""
         `/創建商店` - 創建新商店（可自定義ID）
         `/我的商店` - 查看你的商店
-        `/添加商品` - 添加商品到商店
+        `/添加商品` - 添加商品到商店（可設定庫存）
         `/查看商店` - 查看某個商店
         `/刪除商店` - 刪除你的商店
+        `/補貨` - 為商品補充庫存 ✨新
         `/商品設置` - 設置商品屬性
         `/修改使用描述` - 修改物品使用描述
         """,
@@ -1899,7 +2058,7 @@ async def help_command(interaction: discord.Interaction):
         inline=False
     )
     
-    embed.set_footer(text="💡 Discord管理員始終擁有所有管理權限")
+    embed.set_footer(text="✨ 新增功能：商品庫存系統 | 💡 Discord管理員始終擁有所有管理權限")
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
