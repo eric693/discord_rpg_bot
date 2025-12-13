@@ -71,7 +71,7 @@ async def check_admin_permission(interaction: discord.Interaction) -> bool:
     return is_bot_admin(guild_id, user_id)
 
 def admin_only():
-    """裝飾器：只允許管理員使用"""
+    """裝飾器：只允許管理員使用（已廢棄，改用手動檢查）"""
     async def predicate(interaction: discord.Interaction) -> bool:
         if await check_admin_permission(interaction):
             return True
@@ -112,7 +112,8 @@ def init_guild(guild_id: str):
     if guild_id not in guilds:
         guilds[guild_id] = {
             "currencies": {},  # 貨幣列表
-            "income_roles": {}  # 收入身份組
+            "income_roles": {},  # 收入身份組
+            "bot_admins": []  # 機器人管理員列表
         }
         save_guilds(guilds)
     return guilds[guild_id]
@@ -343,7 +344,6 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         max_length=10
     )
     
-    # ✅ 庫存數量輸入
     stock = discord.ui.TextInput(
         label='庫存數量',
         placeholder='輸入庫存數量（-1表示無限庫存）',
@@ -383,7 +383,6 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
             await interaction.response.send_message("❌ 價格必須是非負整數！", ephemeral=True)
             return
         
-        # ✅ 驗證庫存數量
         try:
             stock = int(self.stock.value)
             if stock < -1:
@@ -406,7 +405,7 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
             "category": self.category.value,
             "description": self.description.value,
             "image_url": None,
-            "stock": stock,  # ✅ 儲存庫存數量
+            "stock": stock,
             "usable": True,
             "resellable": True,
             "consumable": True,
@@ -426,7 +425,7 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         stock_display = "無限" if stock == -1 else f"{stock} 個"
         
         embed.add_field(name="價格", value=price_display, inline=True)
-        embed.add_field(name="庫存", value=stock_display, inline=True)  # ✅ 顯示庫存
+        embed.add_field(name="庫存", value=stock_display, inline=True)
         embed.add_field(name="類別", value=self.category.value, inline=True)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -480,7 +479,7 @@ class CurrencySelectView(discord.ui.View):
             await interaction.response.send_modal(modal)
 
 # ==================== 購買數量選擇Modal ====================
-# ✅ 購買數量輸入Modal
+
 class PurchaseQuantityModal(discord.ui.Modal, title='選擇購買數量'):
     quantity = discord.ui.TextInput(
         label='購買數量',
@@ -512,9 +511,9 @@ class PurchaseQuantityModal(discord.ui.Modal, title='選擇購買數量'):
         guilds = get_guilds()
         currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
         
-        # ✅ 檢查庫存
+        # 檢查庫存
         current_stock = item.get('stock', -1)
-        if current_stock != -1:  # 不是無限庫存
+        if current_stock != -1:
             if current_stock < quantity:
                 await interaction.response.send_message(
                     f"❌ 庫存不足！目前只剩 **{current_stock}** 個",
@@ -540,7 +539,7 @@ class PurchaseQuantityModal(discord.ui.Modal, title='選擇購買數量'):
             )
             return
         
-        # ✅ 扣除庫存
+        # 扣除庫存
         if current_stock != -1:
             item['stock'] -= quantity
         
@@ -576,7 +575,6 @@ class PurchaseQuantityModal(discord.ui.Modal, title='選擇購買數量'):
             inline=True
         )
         
-        # ✅ 顯示剩餘庫存
         if item.get('stock', -1) != -1:
             embed.add_field(
                 name="商品剩餘庫存",
@@ -662,22 +660,18 @@ class ShopView(discord.ui.View):
             await interaction.response.send_message("❌ 商店目前沒有商品！", ephemeral=True)
             return
         
-        # 創建選擇菜單
         guilds = get_guilds()
         options = []
         for item_id, item in items:
-            # ✅ 檢查庫存和價格
-            if item['price'] > 0:  # 只顯示非賣品以外的商品
+            if item['price'] > 0:
                 current_stock = item.get('stock', -1)
                 
-                # ✅ 跳過無庫存商品
                 if current_stock == 0:
                     continue
                 
                 currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
                 price_display = f"{item['price']} {currency_data['emoji']}"
                 
-                # ✅ 顯示庫存信息
                 stock_display = "♾️" if current_stock == -1 else f"剩{current_stock}"
                 
                 options.append(
@@ -692,11 +686,10 @@ class ShopView(discord.ui.View):
             await interaction.response.send_message("❌ 沒有可購買的商品或所有商品都已售罄！", ephemeral=True)
             return
         
-        select = discord.ui.Select(placeholder="選擇要購買的商品...", options=options[:25])  # Discord限制25個選項
+        select = discord.ui.Select(placeholder="選擇要購買的商品...", options=options[:25])
         
         async def select_callback(select_interaction: discord.Interaction):
             item_id = select.values[0]
-            # ✅ 打開購買數量Modal
             modal = PurchaseQuantityModal(self.shop_key, self.shop_id, item_id, self.guild_id)
             await select_interaction.response.send_modal(modal)
         
@@ -750,7 +743,6 @@ class ShopView(discord.ui.View):
                 currency_data = guilds[self.guild_id]['currencies'][item['currency_id']]
                 price_str = "非賣品" if item['price'] == 0 else f"{item['price']} {currency_data['emoji']} {currency_data['name']}"
                 
-                # ✅ 顯示庫存信息
                 stock = item.get('stock', -1)
                 if stock == -1:
                     stock_str = "📦 庫存: 無限 ♾️"
@@ -781,7 +773,6 @@ class InventoryView(discord.ui.View):
     
     @discord.ui.button(label='使用物品', style=discord.ButtonStyle.green, emoji='✨')
     async def use_item(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 從user_key提取user_id
         user_id = self.user_key.split('_', 1)[1]
         if str(interaction.user.id) != user_id:
             await interaction.response.send_message("❌ 這不是你的背包！", ephemeral=True)
@@ -794,7 +785,6 @@ class InventoryView(discord.ui.View):
             await interaction.response.send_message("❌ 背包是空的！", ephemeral=True)
             return
         
-        # 創建選擇菜單
         options = []
         for item_id, item_data in inventory.items():
             if item_data['quantity'] > 0 and item_data['item_data'].get('usable', True):
@@ -810,13 +800,12 @@ class InventoryView(discord.ui.View):
             await interaction.response.send_message("❌ 沒有可使用的物品！", ephemeral=True)
             return
         
-        select = discord.ui.Select(placeholder="選擇要使用的物品...", options=options[:25])  # Discord限制25個選項
+        select = discord.ui.Select(placeholder="選擇要使用的物品...", options=options[:25])
         
         async def select_callback(select_interaction: discord.Interaction):
             item_id = select.values[0]
             item_data = inventory[item_id]
             
-            # 使用物品
             embed = discord.Embed(
                 title="✨ 使用物品",
                 description=f"你使用了 **{item_data['name']}**",
@@ -829,7 +818,6 @@ class InventoryView(discord.ui.View):
             if item_data['item_data'].get('image_url'):
                 embed.set_thumbnail(url=item_data['item_data']['image_url'])
             
-            # 如果是消耗品，減少數量
             if item_data['item_data'].get('consumable', True):
                 item_data['quantity'] -= 1
                 if item_data['quantity'] <= 0:
@@ -859,7 +847,6 @@ class InventoryView(discord.ui.View):
         users = get_users()
         inventory = users[self.user_key]['inventory']
         
-        # 獲取所有類別
         categories = set()
         for item_data in inventory.values():
             if item_data['quantity'] > 0:
@@ -892,7 +879,6 @@ class InventoryView(discord.ui.View):
         inventory = users[self.user_key]['inventory']
         guilds = get_guilds()
         
-        # 過濾類別
         filtered_items = []
         for item_id, item_data in inventory.items():
             if item_data['quantity'] > 0:
@@ -905,7 +891,6 @@ class InventoryView(discord.ui.View):
             color=discord.Color.gold()
         )
         
-        # 顯示所有貨幣餘額
         balances_text = []
         for curr_id, balance in users[self.user_key]['balances'].items():
             if curr_id in guilds[self.guild_id]['currencies']:
@@ -1034,10 +1019,9 @@ class CreateCharacterModal(discord.ui.Modal, title='創建角色'):
 
 @bot.tree.command(name="創建貨幣", description="創建一種新的貨幣（管理員）")
 async def create_currency(interaction: discord.Interaction):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1075,10 +1059,9 @@ async def list_currencies(interaction: discord.Interaction):
 @bot.tree.command(name="刪除貨幣", description="刪除一種貨幣（管理員，謹慎使用！）")
 @app_commands.describe(貨幣id="要刪除的貨幣ID")
 async def delete_currency(interaction: discord.Interaction, 貨幣id: str):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1110,7 +1093,6 @@ async def create_shop(interaction: discord.Interaction):
     guilds = get_guilds()
     init_guild(guild_id)
     
-    # 檢查是否有貨幣
     if not guilds[guild_id]['currencies']:
         await interaction.response.send_message(
             "❌ 伺服器還沒有任何貨幣！\n請先請管理員使用 `/創建貨幣` 創建貨幣。",
@@ -1166,7 +1148,6 @@ async def add_item(interaction: discord.Interaction, 商店id: str):
         )
         return
     
-    # 顯示貨幣選擇界面
     view = CurrencySelectView(guild_id, user_id, shop_id, "add_item")
     await interaction.response.send_message("請選擇商品使用的貨幣類型：", view=view, ephemeral=True)
 
@@ -1202,14 +1183,12 @@ async def view_shop(interaction: discord.Interaction, 用戶: discord.User, 商�
     embed.add_field(name="商店ID", value=f"`{shop_id}`", inline=True)
     embed.add_field(name="商品數量", value=len(shop['items']), inline=True)
     
-    # 顯示商品列表
     guilds = get_guilds()
     if shop['items']:
-        for item_id, item in list(shop['items'].items())[:5]:  # 只顯示前5個
+        for item_id, item in list(shop['items'].items())[:5]:
             currency_data = guilds[guild_id]['currencies'][item['currency_id']]
             price_str = "非賣品" if item['price'] == 0 else f"{item['price']} {currency_data['emoji']} {currency_data['name']}"
             
-            # ✅ 顯示庫存
             stock = item.get('stock', -1)
             if stock == -1:
                 stock_str = "📦 無限庫存"
@@ -1244,7 +1223,7 @@ async def delete_shop(interaction: discord.Interaction, 商店id: str):
     shop_name = shops[shop_key][shop_id]['name']
     del shops[shop_key][shop_id]
     
-    if not shops[shop_key]:  # 如果沒有商店了，刪除整個key
+    if not shops[shop_key]:
         del shops[shop_key]
     
     save_shops(shops)
@@ -1254,7 +1233,6 @@ async def delete_shop(interaction: discord.Interaction, 商店id: str):
         ephemeral=True
     )
 
-# ✅ 補貨指令
 @bot.tree.command(name="補貨", description="為商品補充庫存")
 @app_commands.describe(
     商店id="商店的ID",
@@ -1320,7 +1298,6 @@ async def inventory(interaction: discord.Interaction):
         color=discord.Color.gold()
     )
     
-    # 顯示所有貨幣餘額
     balances_text = []
     for curr_id, balance in users[user_key]['balances'].items():
         if curr_id in guilds[guild_id]['currencies']:
@@ -1333,7 +1310,6 @@ async def inventory(interaction: discord.Interaction):
         embed.add_field(name="💰 餘額", value="暫無貨幣", inline=False)
     
     if inventory:
-        # 統計各類別物品數量
         categories = {}
         for item_data in inventory.values():
             if item_data['quantity'] > 0:
@@ -1347,7 +1323,6 @@ async def inventory(interaction: discord.Interaction):
                 inline=False
             )
         
-        # 顯示前幾個物品
         shown = 0
         for item_id, item_data in inventory.items():
             if item_data['quantity'] > 0 and shown < 5:
@@ -1401,7 +1376,6 @@ async def character_sheet(interaction: discord.Interaction, 用戶: Optional[dis
         color=discord.Color.purple()
     )
     
-    # HP條
     hp_percent = char['hp'] / char['max_hp']
     hp_bar = "█" * int(hp_percent * 10) + "░" * (10 - int(hp_percent * 10))
     embed.add_field(
@@ -1410,7 +1384,6 @@ async def character_sheet(interaction: discord.Interaction, 用戶: Optional[dis
         inline=False
     )
     
-    # MP條
     mp_percent = char['mp'] / char['max_mp']
     mp_bar = "█" * int(mp_percent * 10) + "░" * (10 - int(mp_percent * 10))
     embed.add_field(
@@ -1439,14 +1412,12 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     guilds = get_guilds()
     init_guild(guild_id)
     
-    # 確定使用的貨幣
     if 貨幣id:
         currency_id = 貨幣id.lower().strip()
         if currency_id not in guilds[guild_id]['currencies']:
             await interaction.response.send_message(f"❌ 找不到貨幣ID `{currency_id}`！", ephemeral=True)
             return
     else:
-        # 使用第一個可用的貨幣
         if not guilds[guild_id]['currencies']:
             await interaction.response.send_message(
                 "❌ 伺服器還沒有任何貨幣！請聯繫管理員。",
@@ -1462,7 +1433,6 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     today = now.date().isoformat()
     checkin_key = f"{user_key}_{currency_id}"
     
-    # 檢查今天是否已簽到
     if checkin_key in checkins and checkins[checkin_key].get('last_checkin') == today:
         await interaction.response.send_message(
             f"❌ 你今天已經簽到過 {currency_data['emoji']} {currency_data['name']} 了！明天再來吧~",
@@ -1470,7 +1440,6 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
         )
         return
     
-    # 獲取收入身份組設定
     income_roles = guilds[guild_id].get('income_roles', {})
     guild = interaction.guild
     member = guild.get_member(interaction.user.id)
@@ -1479,7 +1448,6 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     bonus = 0
     bonus_roles = []
     
-    # 檢查用戶是否有收入身份組（針對此貨幣）
     for role in member.roles:
         role_id = str(role.id)
         if role_id in income_roles:
@@ -1490,18 +1458,15 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     
     total_reward = base_reward + bonus
     
-    # 更新用戶餘額
     users = get_users()
     if currency_id not in users[user_key]['balances']:
         users[user_key]['balances'][currency_id] = 0
     users[user_key]['balances'][currency_id] += total_reward
     save_users(users)
     
-    # 記錄簽到
     if checkin_key not in checkins:
         checkins[checkin_key] = {"streak": 0}
     
-    # 檢查連續簽到
     last_checkin = checkins[checkin_key].get('last_checkin')
     if last_checkin:
         last_date = datetime.fromisoformat(last_checkin).date()
@@ -1542,10 +1507,9 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
     每日收入="每日簽到時獲得的額外收入"
 )
 async def set_income_role(interaction: discord.Interaction, 身份組: discord.Role, 貨幣id: str, 每日收入: int):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1573,7 +1537,7 @@ async def set_income_role(interaction: discord.Interaction, 身份組: discord.R
         }
     
     guilds[guild_id]['income_roles'][role_id]['currencies'][currency_id] = 每日收入
-    guilds[guild_id]['income_roles'][role_id]['name'] = 身份組.name  # 更新名稱
+    guilds[guild_id]['income_roles'][role_id]['name'] = 身份組.name
     
     save_guilds(guilds)
     
@@ -1627,10 +1591,9 @@ async def list_income_roles(interaction: discord.Interaction):
     金額="要添加的金額"
 )
 async def add_money(interaction: discord.Interaction, 用戶: discord.User, 貨幣id: str, 金額: int):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1680,10 +1643,9 @@ async def add_money(interaction: discord.Interaction, 用戶: discord.User, 貨�
     金額="要移除的金額"
 )
 async def remove_money(interaction: discord.Interaction, 用戶: discord.User, 貨幣id: str, 金額: int):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1741,10 +1703,9 @@ async def remove_money(interaction: discord.Interaction, 用戶: discord.User, �
 @bot.tree.command(name="查看餘額", description="查看玩家的餘額（管理員）")
 @app_commands.describe(用戶="要查看的玩家")
 async def check_balance(interaction: discord.Interaction, 用戶: discord.User):
-    # 檢查管理員權限
     if not await check_admin_permission(interaction):
         await interaction.response.send_message(
-            "❌ 此指令僅限管理員使用！",
+            "❌ 此指令僅限管理員使用！\n💡 需要Discord管理員權限或被設為機器人管理員。",
             ephemeral=True
         )
         return
@@ -1823,7 +1784,6 @@ async def transfer_money(interaction: discord.Interaction, 用戶: discord.User,
         )
         return
     
-    # 轉帳
     users[sender_key]['balances'][currency_id] = sender_balance - 金額
     
     if currency_id not in users[receiver_key]['balances']:
@@ -1876,7 +1836,6 @@ async def item_settings(interaction: discord.Interaction, 商店id: str, 商品�
     embed.add_field(name="可轉售", value="✅" if item.get('resellable', True) else "❌", inline=True)
     embed.add_field(name="消耗型", value="✅" if item.get('consumable', True) else "❌", inline=True)
     
-    # ✅ 顯示庫存信息
     stock = item.get('stock', -1)
     stock_display = "無限 ♾️" if stock == -1 else f"{stock} 個"
     embed.add_field(name="📦 庫存", value=stock_display, inline=True)
