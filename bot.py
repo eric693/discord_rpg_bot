@@ -341,8 +341,7 @@ class CreateCurrencyModal(discord.ui.Modal, title='創建貨幣'):
 # ==================== 簽到指令（完全重寫） ====================
 
 @bot.tree.command(name="簽到", description="每日簽到獲得獎勵")
-@app_commands.describe(貨幣id="要簽到的貨幣類型（不填則顯示所有可簽到的貨幣）")
-async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = None):
+async def checkin(interaction: discord.Interaction):
     guild_id = str(interaction.guild.id)
     user_id = str(interaction.user.id)
     user_key = get_user_key(guild_id, user_id)
@@ -359,74 +358,35 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
         )
         return
     
-    # 如果沒有指定貨幣，顯示所有可簽到的貨幣
-    if not 貨幣id:
-        embed = discord.Embed(
-            title="📋 可簽到的貨幣列表",
-            description="請使用 `/簽到 貨幣id` 進行簽到",
-            color=discord.Color.blue()
-        )
-        
-        checkins = get_checkins()
-        now = datetime.now()
-        today = now.date().isoformat()
-        
-        for curr_id, curr_data in guilds[guild_id]['currencies'].items():
-            checkin_key = f"{user_key}_{curr_id}"
-            
-            # 檢查今天是否已簽到
-            already_checked = checkin_key in checkins and checkins[checkin_key].get('last_checkin') == today
-            status = "✅ 已簽到" if already_checked else "⏳ 可簽到"
-            
-            # 獲取簽到設置
-            checkin_settings = guilds[guild_id].get('checkin_settings', {}).get(curr_id, {})
-            base_amount = checkin_settings.get('base_amount', 100)
-            
-            # 計算身份組加成
-            income_roles = guilds[guild_id].get('income_roles', {})
-            member = interaction.guild.get_member(interaction.user.id)
-            bonus = 0
-            
-            for role in member.roles:
-                role_id = str(role.id)
-                if role_id in income_roles:
-                    role_currencies = income_roles[role_id].get('currencies', {})
-                    if curr_id in role_currencies:
-                        bonus += role_currencies[curr_id]
-            
-            total_amount = base_amount + bonus
-            
-            embed.add_field(
-                name=f"{curr_data['emoji']} {curr_data['name']} (`{curr_id}`)",
-                value=f"{status}\n獎勵: {total_amount} {curr_data['emoji']} (基礎:{base_amount} + 加成:{bonus})",
-                inline=False
-            )
-        
-        await interaction.response.send_message(embed=embed)
-        return
-    
-    # 驗證貨幣ID
-    currency_id = 貨幣id.lower().strip()
-    if currency_id not in guilds[guild_id]['currencies']:
-        await interaction.response.send_message(f"❌ 找不到貨幣ID `{currency_id}`！", ephemeral=True)
-        return
-    
-    currency_data = guilds[guild_id]['currencies'][currency_id]
-    
-    # 檢查是否已簽到
+    # 檢查是否已簽到（檢查第一個貨幣作為簽到標記）
     checkins = get_checkins()
     now = datetime.now()
     today = now.date().isoformat()
-    checkin_key = f"{user_key}_{currency_id}"
+    global_checkin_key = f"{user_key}_checkin"
     
-    if checkin_key in checkins and checkins[checkin_key].get('last_checkin') == today:
+    if global_checkin_key in checkins and checkins[global_checkin_key].get('last_checkin') == today:
         # 已經簽到過了
-        checkin_settings = guilds[guild_id].get('checkin_settings', {}).get(currency_id, {})
-        already_message = checkin_settings.get('already_checkin_message', "你今天已經簽到過了！明天再來吧~")
-        background_url = checkin_settings.get('background_url')
+        # 使用第一個有背景圖的貨幣設置，或第一個貨幣的設置
+        checkin_settings_list = guilds[guild_id].get('checkin_settings', {})
+        background_url = None
+        already_message = "你今天已經簽到過了！明天再來吧~"
+        
+        for curr_id in guilds[guild_id]['currencies'].keys():
+            settings = checkin_settings_list.get(curr_id, {})
+            if settings.get('background_url'):
+                background_url = settings['background_url']
+                already_message = settings.get('already_checkin_message', already_message)
+                break
+        
+        if not background_url:
+            # 沒有找到有背景的，使用第一個貨幣的設置
+            first_curr = list(guilds[guild_id]['currencies'].keys())[0]
+            settings = checkin_settings_list.get(first_curr, {})
+            already_message = settings.get('already_checkin_message', already_message)
+            background_url = settings.get('background_url')
         
         embed = discord.Embed(
-            title=f"✅ {currency_data['name']} 簽到",
+            title=f"✅ 每日簽到",
             description=already_message,
             color=discord.Color.orange()
         )
@@ -436,81 +396,125 @@ async def checkin(interaction: discord.Interaction, 貨幣id: Optional[str] = No
         
         embed.add_field(
             name="連續簽到",
-            value=f"{checkins[checkin_key].get('streak', 1)} 天",
+            value=f"{checkins[global_checkin_key].get('streak', 1)} 天 🔥",
             inline=True
         )
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    # 執行簽到
-    checkin_settings = guilds[guild_id].get('checkin_settings', {}).get(currency_id, {})
-    base_amount = checkin_settings.get('base_amount', 100)
-    success_message = checkin_settings.get('success_message', "簽到成功！獲得獎勵~")
-    background_url = checkin_settings.get('background_url')
-    
-    # 計算身份組加成
-    income_roles = guilds[guild_id].get('income_roles', {})
-    member = interaction.guild.get_member(interaction.user.id)
-    bonus = 0
-    bonus_roles = []
-    
-    for role in member.roles:
-        role_id = str(role.id)
-        if role_id in income_roles:
-            role_currencies = income_roles[role_id].get('currencies', {})
-            if curr_id in role_currencies:
-                bonus += role_currencies[curr_id]
-                bonus_roles.append(f"{role.name} (+{role_currencies[curr_id]} {currency_data['emoji']})")
-    
-    total_reward = base_amount + bonus
-    
-    # 更新餘額
+    # 執行簽到 - 獲得所有貨幣
     users = get_users()
-    if currency_id not in users[user_key]['balances']:
-        users[user_key]['balances'][currency_id] = 0
-    users[user_key]['balances'][currency_id] += total_reward
+    member = interaction.guild.get_member(interaction.user.id)
+    income_roles = guilds[guild_id].get('income_roles', {})
+    checkin_settings_list = guilds[guild_id].get('checkin_settings', {})
+    
+    # 收集所有獎勵
+    rewards = []
+    all_bonus_roles = {}  # {role_name: {curr_id: amount}}
+    background_url = None
+    success_message = "簽到成功！獲得獎勵~"
+    
+    for curr_id, curr_data in guilds[guild_id]['currencies'].items():
+        # 獲取簽到設置
+        settings = checkin_settings_list.get(curr_id, {})
+        base_amount = settings.get('base_amount', 100)
+        
+        if not background_url and settings.get('background_url'):
+            background_url = settings['background_url']
+            success_message = settings.get('success_message', success_message)
+        
+        # 計算身份組加成
+        bonus = 0
+        for role in member.roles:
+            role_id = str(role.id)
+            if role_id in income_roles:
+                role_currencies = income_roles[role_id].get('currencies', {})
+                if curr_id in role_currencies:
+                    bonus_amount = role_currencies[curr_id]
+                    bonus += bonus_amount
+                    
+                    # 記錄加成來源
+                    if role.name not in all_bonus_roles:
+                        all_bonus_roles[role.name] = {}
+                    all_bonus_roles[role.name][curr_id] = bonus_amount
+        
+        total_reward = base_amount + bonus
+        
+        # 更新餘額
+        if curr_id not in users[user_key]['balances']:
+            users[user_key]['balances'][curr_id] = 0
+        users[user_key]['balances'][curr_id] += total_reward
+        
+        # 記錄獎勵信息
+        rewards.append({
+            'currency_id': curr_id,
+            'currency_data': curr_data,
+            'base': base_amount,
+            'bonus': bonus,
+            'total': total_reward,
+            'balance': users[user_key]['balances'][curr_id]
+        })
+    
     save_users(users)
     
     # 更新簽到記錄
-    if checkin_key not in checkins:
-        checkins[checkin_key] = {"streak": 0}
+    if global_checkin_key not in checkins:
+        checkins[global_checkin_key] = {"streak": 0}
     
-    last_checkin = checkins[checkin_key].get('last_checkin')
+    last_checkin = checkins[global_checkin_key].get('last_checkin')
     if last_checkin:
         last_date = datetime.fromisoformat(last_checkin).date()
         if (now.date() - last_date).days == 1:
-            checkins[checkin_key]['streak'] += 1
+            checkins[global_checkin_key]['streak'] += 1
         else:
-            checkins[checkin_key]['streak'] = 1
+            checkins[global_checkin_key]['streak'] = 1
     else:
-        checkins[checkin_key]['streak'] = 1
+        checkins[global_checkin_key]['streak'] = 1
     
-    checkins[checkin_key]['last_checkin'] = today
+    checkins[global_checkin_key]['last_checkin'] = today
     save_checkins(checkins)
     
     # 創建簽到成功的Embed
     embed = discord.Embed(
-        title=f"✅ {currency_data['name']} {success_message}",
-        description=f"你獲得了 **{total_reward}** {currency_data['emoji']} {currency_data['name']}",
+        title=f"✅ {success_message}",
+        description=f"連續簽到 **{checkins[global_checkin_key]['streak']}** 天 🔥",
         color=discord.Color.green()
     )
     
     if background_url:
         embed.set_image(url=background_url)
     
-    embed.add_field(name="基礎獎勵", value=f"{base_amount} {currency_data['emoji']}", inline=True)
+    # 顯示所有獎勵
+    for reward in rewards:
+        curr_data = reward['currency_data']
+        reward_text = f"基礎: {reward['base']} {curr_data['emoji']}"
+        if reward['bonus'] > 0:
+            reward_text += f" + 加成: {reward['bonus']} {curr_data['emoji']}"
+        reward_text += f"\n**總計: {reward['total']}** {curr_data['emoji']}"
+        reward_text += f"\n當前餘額: {reward['balance']} {curr_data['emoji']}"
+        
+        embed.add_field(
+            name=f"{curr_data['emoji']} {curr_data['name']}",
+            value=reward_text,
+            inline=True
+        )
     
-    if bonus > 0:
-        embed.add_field(name="身份組加成", value=f"+{bonus} {currency_data['emoji']}", inline=True)
-        embed.add_field(name="加成來自", value="\n".join(bonus_roles), inline=False)
-    
-    embed.add_field(name="連續簽到", value=f"{checkins[checkin_key]['streak']} 天 🔥", inline=True)
-    embed.add_field(
-        name="當前餘額",
-        value=f"{users[user_key]['balances'][currency_id]} {currency_data['emoji']}",
-        inline=True
-    )
+    # 顯示身份組加成詳情
+    if all_bonus_roles:
+        bonus_text = []
+        for role_name, currencies in all_bonus_roles.items():
+            role_bonus = []
+            for curr_id, amount in currencies.items():
+                curr_data = guilds[guild_id]['currencies'][curr_id]
+                role_bonus.append(f"+{amount} {curr_data['emoji']}")
+            bonus_text.append(f"**{role_name}**: {' '.join(role_bonus)}")
+        
+        embed.add_field(
+            name="🎁 身份組加成",
+            value="\n".join(bonus_text),
+            inline=False
+        )
     
     await interaction.response.send_message(embed=embed)
 
