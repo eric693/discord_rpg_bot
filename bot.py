@@ -681,6 +681,14 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         max_length=50
     )
     
+    description = discord.ui.TextInput(
+        label='商品描述',
+        placeholder='描述這個商品...',
+        required=True,
+        style=discord.TextStyle.long,
+        max_length=200
+    )
+    
     price = discord.ui.TextInput(
         label='價格',
         placeholder='輸入價格（0表示非賣品）',
@@ -755,13 +763,13 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
             "price": price,
             "currency_id": self.currency_id,
             "category": self.category.value,
-            "description": "商品描述",
+            "description": self.description.value,  # 使用填寫的描述
             "image_url": None,
             "stock": stock,
             "usable": True,
             "resellable": True,
             "consumable": True,
-            "use_description": "",
+            "use_description": "",  # 使用描述默認為空，可以後續修改
             "created_at": datetime.now().isoformat()
         }
         
@@ -780,7 +788,8 @@ class AddItemModal(discord.ui.Modal, title='添加商品'):
         embed.add_field(name="價格", value=price_display, inline=True)
         embed.add_field(name="庫存", value=stock_display, inline=True)
         embed.add_field(name="類別", value=self.category.value, inline=True)
-        embed.add_field(name="💡 提示", value=f"使用 `/商品列表 {self.shop_id}` 查看所有商品", inline=False)
+        embed.add_field(name="描述", value=self.description.value, inline=False)
+        embed.add_field(name="💡 提示", value=f"使用 `/商品列表 {self.shop_id}` 查看所有商品\n使用 `/修改使用描述 {self.shop_id} {item_id}` 設置使用效果", inline=False)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -953,48 +962,123 @@ class ItemSettingsView(discord.ui.View):
         self.shop_id = shop_id
         self.item_id = item_id
         self.owner_id = owner_id
+        self.update_buttons()
     
-    @discord.ui.button(label='可使用', style=discord.ButtonStyle.gray, custom_id='toggle_usable')
-    async def toggle_usable(self, interaction: discord.Interaction, button: discord.ui.Button):
+    def update_buttons(self):
+        """更新按鈕狀態"""
+        shops = get_shops()
+        if self.shop_key in shops and self.shop_id in shops[self.shop_key]:
+            if self.item_id in shops[self.shop_key][self.shop_id]['items']:
+                item = shops[self.shop_key][self.shop_id]['items'][self.item_id]
+                
+                # 清除所有按鈕
+                self.clear_items()
+                
+                # 添加更新後的按鈕
+                usable_button = discord.ui.Button(
+                    label='可使用',
+                    style=discord.ButtonStyle.green if item.get('usable', True) else discord.ButtonStyle.red,
+                    custom_id='toggle_usable'
+                )
+                usable_button.callback = self.toggle_usable
+                self.add_item(usable_button)
+                
+                resellable_button = discord.ui.Button(
+                    label='可轉售',
+                    style=discord.ButtonStyle.green if item.get('resellable', True) else discord.ButtonStyle.red,
+                    custom_id='toggle_resellable'
+                )
+                resellable_button.callback = self.toggle_resellable
+                self.add_item(resellable_button)
+                
+                consumable_button = discord.ui.Button(
+                    label='消耗型',
+                    style=discord.ButtonStyle.green if item.get('consumable', True) else discord.ButtonStyle.red,
+                    custom_id='toggle_consumable'
+                )
+                consumable_button.callback = self.toggle_consumable
+                self.add_item(consumable_button)
+    
+    async def toggle_usable(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.owner_id:
             await interaction.response.send_message("❌ 只有商店擁有者可以修改設定！", ephemeral=True)
             return
         
         shops = get_shops()
         item = shops[self.shop_key][self.shop_id]['items'][self.item_id]
-        item['usable'] = not item['usable']
+        item['usable'] = not item.get('usable', True)
         save_shops(shops)
         
-        button.style = discord.ButtonStyle.green if item['usable'] else discord.ButtonStyle.red
-        await interaction.response.edit_message(view=self)
+        # 更新按鈕和embed
+        self.update_buttons()
+        
+        embed = discord.Embed(
+            title=f"⚙️ {item['name']} (`{self.item_id}`) - 設置",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="可使用", value="✅ 是" if item.get('usable', True) else "❌ 否", inline=True)
+        embed.add_field(name="可轉售", value="✅ 是" if item.get('resellable', True) else "❌ 否", inline=True)
+        embed.add_field(name="消耗型", value="✅ 是" if item.get('consumable', True) else "❌ 否", inline=True)
+        
+        stock = item.get('stock', -1)
+        stock_display = "無限 ♾️" if stock == -1 else f"{stock} 個"
+        embed.add_field(name="📦 庫存", value=stock_display, inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
     
-    @discord.ui.button(label='可轉售', style=discord.ButtonStyle.gray, custom_id='toggle_resellable')
-    async def toggle_resellable(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def toggle_resellable(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.owner_id:
             await interaction.response.send_message("❌ 只有商店擁有者可以修改設定！", ephemeral=True)
             return
         
         shops = get_shops()
         item = shops[self.shop_key][self.shop_id]['items'][self.item_id]
-        item['resellable'] = not item['resellable']
+        item['resellable'] = not item.get('resellable', True)
         save_shops(shops)
         
-        button.style = discord.ButtonStyle.green if item['resellable'] else discord.ButtonStyle.red
-        await interaction.response.edit_message(view=self)
+        # 更新按鈕和embed
+        self.update_buttons()
+        
+        embed = discord.Embed(
+            title=f"⚙️ {item['name']} (`{self.item_id}`) - 設置",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="可使用", value="✅ 是" if item.get('usable', True) else "❌ 否", inline=True)
+        embed.add_field(name="可轉售", value="✅ 是" if item.get('resellable', True) else "❌ 否", inline=True)
+        embed.add_field(name="消耗型", value="✅ 是" if item.get('consumable', True) else "❌ 否", inline=True)
+        
+        stock = item.get('stock', -1)
+        stock_display = "無限 ♾️" if stock == -1 else f"{stock} 個"
+        embed.add_field(name="📦 庫存", value=stock_display, inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
     
-    @discord.ui.button(label='消耗型', style=discord.ButtonStyle.gray, custom_id='toggle_consumable')
-    async def toggle_consumable(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def toggle_consumable(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.owner_id:
             await interaction.response.send_message("❌ 只有商店擁有者可以修改設定！", ephemeral=True)
             return
         
         shops = get_shops()
         item = shops[self.shop_key][self.shop_id]['items'][self.item_id]
-        item['consumable'] = not item['consumable']
+        item['consumable'] = not item.get('consumable', True)
         save_shops(shops)
         
-        button.style = discord.ButtonStyle.green if item['consumable'] else discord.ButtonStyle.red
-        await interaction.response.edit_message(view=self)
+        # 更新按鈕和embed
+        self.update_buttons()
+        
+        embed = discord.Embed(
+            title=f"⚙️ {item['name']} (`{self.item_id}`) - 設置",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="可使用", value="✅ 是" if item.get('usable', True) else "❌ 否", inline=True)
+        embed.add_field(name="可轉售", value="✅ 是" if item.get('resellable', True) else "❌ 否", inline=True)
+        embed.add_field(name="消耗型", value="✅ 是" if item.get('consumable', True) else "❌ 否", inline=True)
+        
+        stock = item.get('stock', -1)
+        stock_display = "無限 ♾️" if stock == -1 else f"{stock} 個"
+        embed.add_field(name="📦 庫存", value=stock_display, inline=True)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
 
 class ShopView(discord.ui.View):
     def __init__(self, shop_key: str, shop_id: str, guild_id: str, page: int = 0):
@@ -2290,15 +2374,23 @@ async def item_settings(interaction: discord.Interaction, 商店id: str, 商品i
     
     embed = discord.Embed(
         title=f"⚙️ {item['name']} (`{item_id}`) - 設置",
+        description="點擊下方按鈕切換商品屬性",
         color=discord.Color.blue()
     )
-    embed.add_field(name="可使用", value="✅" if item.get('usable', True) else "❌", inline=True)
-    embed.add_field(name="可轉售", value="✅" if item.get('resellable', True) else "❌", inline=True)
-    embed.add_field(name="消耗型", value="✅" if item.get('consumable', True) else "❌", inline=True)
+    embed.add_field(name="可使用", value="✅ 是" if item.get('usable', True) else "❌ 否", inline=True)
+    embed.add_field(name="可轉售", value="✅ 是" if item.get('resellable', True) else "❌ 否", inline=True)
+    embed.add_field(name="消耗型", value="✅ 是" if item.get('consumable', True) else "❌ 否", inline=True)
     
     stock = item.get('stock', -1)
     stock_display = "無限 ♾️" if stock == -1 else f"{stock} 個"
     embed.add_field(name="📦 庫存", value=stock_display, inline=True)
+    
+    # 顯示描述
+    embed.add_field(name="📝 商品描述", value=item.get('description', '無'), inline=False)
+    if item.get('use_description'):
+        embed.add_field(name="✨ 使用描述", value=item['use_description'], inline=False)
+    else:
+        embed.add_field(name="✨ 使用描述", value="未設置（使用 `/修改使用描述` 設置）", inline=False)
     
     view = ItemSettingsView(shop_key, shop_id, item_id, user_id)
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -2331,6 +2423,37 @@ async def set_use_description(interaction: discord.Interaction, 商店id: str, �
     
     await interaction.response.send_message(
         f"✅ 已更新 **{shops[shop_key][shop_id]['items'][item_id]['name']}** (`{item_id}`) 的使用描述！",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="修改商品描述", description="修改商品的基本描述")
+@app_commands.describe(
+    商店id="商店ID",
+    商品id="商品ID",
+    描述="商品的基本描述"
+)
+async def set_item_description(interaction: discord.Interaction, 商店id: str, 商品id: str, 描述: str):
+    guild_id = str(interaction.guild.id)
+    user_id = str(interaction.user.id)
+    shop_key = f"{guild_id}_{user_id}"
+    shops = get_shops()
+    
+    shop_id = 商店id.lower().strip()
+    item_id = 商品id.lower().strip()
+    
+    if shop_key not in shops or shop_id not in shops[shop_key]:
+        await interaction.response.send_message("❌ 找不到該商店！", ephemeral=True)
+        return
+    
+    if item_id not in shops[shop_key][shop_id]['items']:
+        await interaction.response.send_message("❌ 找不到該商品！", ephemeral=True)
+        return
+    
+    shops[shop_key][shop_id]['items'][item_id]['description'] = 描述
+    save_shops(shops)
+    
+    await interaction.response.send_message(
+        f"✅ 已更新 **{shops[shop_key][shop_id]['items'][item_id]['name']}** (`{item_id}`) 的商品描述！",
         ephemeral=True
     )
 
@@ -2436,12 +2559,13 @@ async def help_command(interaction: discord.Interaction):
         value="""
         `/創建商店` - 創建新商店
         `/我的商店` - 查看你的商店
-        `/添加商品` - 添加商品（可自定義商品ID）
+        `/添加商品` - 添加商品（可自定義商品ID和描述）
         `/商品列表` - 查看商店所有商品及ID
         `/查看商店` - 查看某個商店
         `/刪除商店` - 刪除你的商店
         `/補貨` - 為商品補充庫存
-        `/商品設置` - 設置商品屬性
+        `/商品設置` - 設置商品屬性（即時更新）
+        `/修改商品描述` - 修改商品基本描述
         `/修改使用描述` - 修改物品使用描述
         """,
         inline=False
